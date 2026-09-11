@@ -78,7 +78,8 @@ def test_chiller_physical_bounds():
 # ==========================================
 # STANDALONE EXECUTION
 # ==========================================
-if __name__ == "__main__":
+def test_operational_comparison_baseline_vs_elevated():
+    """Verify elevated setpoint (9.0°C) reduces power vs baseline (6.0°C) under rated conditions."""
     ambient_temp = 35.0
     cooling_demand = 800.0
 
@@ -88,13 +89,6 @@ if __name__ == "__main__":
     saved_kw = baseline["total_power_kw"] - optimized["total_power_kw"]
     saved_pct = (saved_kw / baseline["total_power_kw"]) * 100
 
-    print(
-        f"--- Operational Comparison (Load: {cooling_demand} kW at {ambient_temp}°C Ambient) ---"
-    )
-    print(
-        f"Baseline Setpoint (6.0°C)  : {baseline['total_power_kw']:.2f} kW | COP: {baseline['cop']:.2f}"
-    )
-    print(
-        f"Elevated Setpoint (9.0°C)  : {optimized['total_power_kw']:.2f} kW | COP: {optimized['cop']:.2f}"
-    )
-    print(f"Power Reduction            : {saved_kw:.2f} kW (-{saved_pct:.1f}%)")
+    assert saved_kw > 0.0
+    assert saved_pct > 0.0
+    assert optimized["cop"] > baseline["cop"]
