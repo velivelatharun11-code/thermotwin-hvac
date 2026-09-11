@@ -24,7 +24,15 @@ refrigerant = st.sidebar.selectbox("Refrigerant Spec", ["R134a", "R410A", "R1234
 
 st.sidebar.markdown("---")
 st.sidebar.header("ASME AI Advisory Agent")
-gemini_api_key = st.sidebar.text_input("Gemini API Key (Optional)", type="password", help="Leave blank for built-in deterministic auditor")
+
+# Automatically pull from st.secrets if configured on Streamlit Cloud
+default_api_key = st.secrets.get("GEMINI_API_KEY", "") if hasattr(st, "secrets") else ""
+gemini_api_key = st.sidebar.text_input(
+    "Gemini API Key (Optional)", 
+    value=default_api_key,
+    type="password", 
+    help="Pre-filled if configured in Streamlit Cloud Secrets. Leave blank for deterministic auditor."
+)
 
 # --- 1. CORE THERMODYNAMICS ---
 def calculate_chiller_performance(chw_supply_c, amb_c, load_kw, ref):
@@ -127,7 +135,7 @@ states_df = pd.DataFrame({
         f"{optimal_data['cop']:.2f}"
     ]
 })
-st.dataframe(states_df, use_container_width=True, hide_index=True)
+st.dataframe(states_df, width="stretch", hide_index=True)
 
 # --- 6. CHARTS ---
 temps_sweep = np.linspace(5.0, 12.0, 25)
@@ -155,7 +163,7 @@ fig.update_layout(
     height=420,
     margin=dict(l=40, r=40, t=50, b=40)
 )
-st.plotly_chart(fig, use_container_width=True)
+st.plotly_chart(fig, width="stretch")
 
 # --- 7. AUTONOMOUS MECHANICAL WORK-ORDER & AUDIT ---
 st.markdown("---")
@@ -227,7 +235,7 @@ if gemini_api_key:
         )
         st.markdown(audit_report)
 else:
-    st.info("💡 Pro-tip: Add a Gemini API Key in the sidebar for live AI reasoning. Displaying deterministic audit:")
+    st.info("💡 Pro-tip: Add a Gemini API Key in the sidebar or Streamlit Secrets for live AI reasoning. Displaying deterministic audit:")
     audit_report = generate_deterministic_audit(
         baseline_power, optimal_power, optimal_temp,
         ambient_temp, cooling_load, refrigerant, daily_savings_usd, optimal_data
