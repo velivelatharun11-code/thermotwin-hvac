@@ -43,8 +43,12 @@ gemini_api_key = st.sidebar.text_input(
     help="Pre-filled if configured in Streamlit Secrets. Leave blank for deterministic auditor."
 )
 
+# --- CALIBRATION STATE MANAGEMENT ---
+if "calibration_factor" not in st.session_state:
+    st.session_state["calibration_factor"] = 1.0
+
 # --- 1. CORE THERMODYNAMICS ---
-def calculate_chiller_performance(chw_supply_c, amb_c, load_kw, ref):
+def calculate_chiller_performance(chw_supply_c, amb_c, load_kw, ref, cal_factor=1.0):
     t_evap_k = (chw_supply_c - 2.5) + 273.15
     t_cond_k = (amb_c + 8.0) + 273.15
     
@@ -58,7 +62,7 @@ def calculate_chiller_performance(chw_supply_c, amb_c, load_kw, ref):
     isentropic_eff = 0.68 - (0.015 * pressure_ratio)
     system_cop = max(carnot_cop * isentropic_eff * 0.75, 1.2)
     
-    compressor_kw = load_kw / system_cop
+    compressor_kw = (load_kw / system_cop) * cal_factor
     auxiliary_kw = (load_kw * 0.08) + (0.5 * (chw_supply_c - 5.0))
     total_power = compressor_kw + auxiliary_kw
     
@@ -66,7 +70,7 @@ def calculate_chiller_performance(chw_supply_c, amb_c, load_kw, ref):
         "total_power_kw": total_power,
         "compressor_kw": compressor_kw,
         "auxiliary_kw": auxiliary_kw,
-        "cop": system_cop,
+        "cop": system_cop / cal_factor,
         "p_evap_bar": p_evap,
         "p_cond_bar": p_cond,
         "pressure_ratio": pressure_ratio
@@ -74,7 +78,7 @@ def calculate_chiller_performance(chw_supply_c, amb_c, load_kw, ref):
 
 # --- 2. SURROGATE MODEL TRAINING (CACHED) ---
 @st.cache_resource(show_spinner="Training physics-informed surrogate model...")
-def get_trained_surrogate(ref):
+def get_trained_surrogate(ref, cal_factor=1.0):
     np.random.seed(42)
     n_samples = 1200
     
@@ -83,7 +87,7 @@ def get_trained_surrogate(ref):
     q_load_synth = np.random.uniform(200.0, 1500.0, n_samples)
     
     y_power = np.array([
-        calculate_chiller_performance(tc, ta, q, ref)["total_power_kw"]
+        calculate_chiller_performance(tc, ta, q, ref, cal_factor)["total_power_kw"]
         for tc, ta, q in zip(t_chw_synth, t_amb_synth, q_load_synth)
     ])
     
@@ -92,11 +96,12 @@ def get_trained_surrogate(ref):
     surrogate.fit(X, y_power)
     return surrogate
 
-surrogate_model = get_trained_surrogate(refrigerant)
+current_cal = st.session_state["calibration_factor"]
+surrogate_model = get_trained_surrogate(refrigerant, current_cal)
 
 # --- 3. SCENARIOS COMPUTATION ---
 baseline_temp = 6.0
-baseline_data = calculate_chiller_performance(baseline_temp, ambient_temp, cooling_load, refrigerant)
+baseline_data = calculate_chiller_performance(baseline_temp, ambient_temp, cooling_load, refrigerant, current_cal)
 baseline_power = baseline_data["total_power_kw"]
 
 def objective_function(t_chw_candidate):
@@ -104,11 +109,11 @@ def objective_function(t_chw_candidate):
 
 opt_result = minimize_scalar(objective_function, bounds=(5.0, 11.5), method='bounded')
 optimal_temp = float(opt_result.x)
-optimal_data = calculate_chiller_performance(optimal_temp, ambient_temp, cooling_load, refrigerant)
+optimal_data = calculate_chiller_performance(optimal_temp, ambient_temp, cooling_load, refrigerant, current_cal)
 optimal_power = optimal_data["total_power_kw"]
 
 comfort_temp = min(optimal_temp, 8.5)
-comfort_data = calculate_chiller_performance(comfort_temp, ambient_temp, cooling_load, refrigerant)
+comfort_data = calculate_chiller_performance(comfort_temp, ambient_temp, cooling_load, refrigerant, current_cal)
 comfort_power = comfort_data["total_power_kw"]
 
 power_saved = baseline_power - optimal_power
@@ -144,6 +149,9 @@ tab_dispatch, tab_benchmark, tab_telemetry, tab_report = st.tabs([
 # TAB 1: REAL-TIME OPTIMIZATION & WORK-ORDER
 # ==============================================================================
 with tab_dispatch:
+    if current_cal != 1.0:
+        st.info(f"🔧 **Adaptive Calibration Active:** Thermodynamic twin calibrated with empirical factor **{current_cal:.3f}** based on telemetry sensor ground-truth.")
+
     st.subheader("⚙️ Thermodynamic Operating States")
     states_df = pd.DataFrame({
         "Parameter": [
@@ -151,21 +159,24 @@ with tab_dispatch:
             "Evaporator Pressure (Suction)",
             "Condenser Pressure (Discharge)",
             "Compression Ratio",
-            "System COP (Efficiency)"
+            "System COP (Efficiency)",
+            "Online Calibration Factor"
         ],
         f"Baseline ({baseline_temp:.1f}°C)": [
             refrigerant,
             f"{baseline_data['p_evap_bar']:.2f} bar",
             f"{baseline_data['p_cond_bar']:.2f} bar",
             f"{baseline_data['pressure_ratio']:.2f}",
-            f"{baseline_data['cop']:.2f}"
+            f"{baseline_data['cop']:.2f}",
+            f"{current_cal:.3f}"
         ],
         "Optimized State": [
             refrigerant,
             f"{optimal_data['p_evap_bar']:.2f} bar",
             f"{optimal_data['p_cond_bar']:.2f} bar",
             f"{optimal_data['pressure_ratio']:.2f}",
-            f"{optimal_data['cop']:.2f}"
+            f"{optimal_data['cop']:.2f}",
+            f"{current_cal:.3f}"
         ]
     })
     st.dataframe(states_df, width="stretch", hide_index=True)
@@ -173,14 +184,14 @@ with tab_dispatch:
     st.markdown("---")
     st.header("📋 Autonomous Mechanical Work-Order & Standards Audit")
 
-    def generate_deterministic_audit(baseline_p, opt_p, opt_t, amb, load, ref, cost_saved, opt_data, co2_cut):
+    def generate_deterministic_audit(baseline_p, opt_p, opt_t, amb, load, ref, cost_saved, opt_data, co2_cut, cal):
         p_saved = baseline_p - opt_p
         pct_saved = (p_saved / baseline_p) * 100.0
         
         return f"""
 ### Dispatch Reference: `WO-HVAC-2026-CH01`
 **Equipment Tag:** Chiller-01 (Continuous Digital Twin Monitoring)  
-**Refrigerant Circuit:** {ref} | **Ambient:** {amb:.1f}°C | **Cooling Demand:** {load:.1f} kW
+**Refrigerant Circuit:** {ref} | **Ambient:** {amb:.1f}°C | **Cooling Demand:** {load:.1f} kW | **Calibration:** {cal:.3f}
 
 | Metric | Baseline | Optimized | Delta |
 | :--- | :--- | :--- | :--- |
@@ -212,19 +223,14 @@ with tab_dispatch:
             - Refrigerant: {refrigerant}
             - Outdoor Ambient: {ambient_temp}°C
             - Cooling Load: {cooling_load} kW
+            - Calibration Factor: {current_cal:.3f}
             - Baseline Setpoint: 6.0°C | Power: {baseline_power:.2f} kW
             - Optimized Setpoint: {optimal_temp:.2f}°C | Power: {optimal_power:.2f} kW
             - Comfort Constrained Setpoint: {comfort_temp:.2f}°C | Power: {comfort_power:.2f} kW
-            - Compression Ratio Improvement: {baseline_data['pressure_ratio']:.2f} -> {optimal_data['pressure_ratio']:.2f}
             - Monthly Financial Savings: ${monthly_savings_usd:.0f}/month
             - Monthly Carbon Reduction: {co2_saved_tons:.1f} t CO2e/month
 
-            Provide:
-            1. A formal mechanical dispatch work-order summary table.
-            2. A thermodynamic analysis detailing compressor lift and suction pressure improvements.
-            3. Compliance checks against ASHRAE 90.1, ASHRAE 55 (latent dehumidification warnings), and ASME B31.5.
-            4. Supervisory control directives for BMS/PLC dispatch.
-            Keep it professional, precise, and concise.
+            Provide a formal mechanical dispatch work-order summary table and engineering compliance checks.
             """
             with st.spinner("Synthesizing ASME engineering advisory report via Gemini..."):
                 response = client.models.generate_content(
@@ -237,14 +243,14 @@ with tab_dispatch:
             st.warning(f"AI advisory agent unavailable ({e}). Falling back to deterministic auditor.")
             audit_report = generate_deterministic_audit(
                 baseline_power, optimal_power, optimal_temp,
-                ambient_temp, cooling_load, refrigerant, daily_savings_usd, optimal_data, co2_saved_tons
+                ambient_temp, cooling_load, refrigerant, daily_savings_usd, optimal_data, co2_saved_tons, current_cal
             )
             st.markdown(audit_report)
     else:
         st.info("💡 Pro-tip: Add a Gemini API Key in the sidebar or Streamlit Secrets for live AI reasoning. Displaying deterministic audit:")
         audit_report = generate_deterministic_audit(
             baseline_power, optimal_power, optimal_temp,
-            ambient_temp, cooling_load, refrigerant, daily_savings_usd, optimal_data, co2_saved_tons
+            ambient_temp, cooling_load, refrigerant, daily_savings_usd, optimal_data, co2_saved_tons, current_cal
         )
         st.markdown(audit_report)
 
@@ -302,11 +308,11 @@ with tab_benchmark:
     with col_bench_2:
         temps_sweep = np.linspace(5.0, 12.0, 25)
         powers_sweep = [
-            calculate_chiller_performance(t, ambient_temp, cooling_load, refrigerant)["total_power_kw"]
+            calculate_chiller_performance(t, ambient_temp, cooling_load, refrigerant, current_cal)["total_power_kw"]
             for t in temps_sweep
         ]
         cops_sweep = [
-            calculate_chiller_performance(t, ambient_temp, cooling_load, refrigerant)["cop"]
+            calculate_chiller_performance(t, ambient_temp, cooling_load, refrigerant, current_cal)["cop"]
             for t in temps_sweep
         ]
 
@@ -329,7 +335,7 @@ with tab_benchmark:
         st.plotly_chart(fig_sweep, width="stretch")
 
 # ==============================================================================
-# TAB 3: TELEMETRY INGESTION & MODEL PARITY
+# TAB 3: TELEMETRY INGESTION & ADAPTIVE CALIBRATION
 # ==============================================================================
 r2_val = 0.993
 mape_val = 1.84
@@ -367,11 +373,12 @@ with tab_telemetry:
         sample_load = 400.0 + 350.0 * np.sin(np.linspace(0, np.pi, hours)) + np.random.normal(0, 15, hours)
         sample_chwst = np.full(hours, 6.7) + np.random.normal(0, 0.2, hours)
         
+        # Ground-truth power with slight thermal fouling offset (~3.5%)
         twin_power_clean = [
-            calculate_chiller_performance(chw, amb, q, refrigerant)["total_power_kw"]
+            calculate_chiller_performance(chw, amb, q, refrigerant, 1.0)["total_power_kw"]
             for chw, amb, q in zip(sample_chwst, sample_amb, sample_load)
         ]
-        measured_power = np.array(twin_power_clean) * np.random.uniform(0.97, 1.04, hours) + np.random.normal(0, 2.0, hours)
+        measured_power = np.array(twin_power_clean) * 1.035 + np.random.normal(0, 1.5, hours)
         
         telemetry_df = pd.DataFrame({
             "Timestamp": timestamps,
@@ -391,7 +398,7 @@ with tab_telemetry:
             st.error(f"Telemetry missing required columns: {required_cols - set(telemetry_df.columns)}")
         else:
             twin_power_predictions = [
-                calculate_chiller_performance(row["Supply_Temp_C"], row["Ambient_Temp_C"], row["Cooling_Load_kW"], refrigerant)["total_power_kw"]
+                calculate_chiller_performance(row["Supply_Temp_C"], row["Ambient_Temp_C"], row["Cooling_Load_kW"], refrigerant, current_cal)["total_power_kw"]
                 for _, row in telemetry_df.iterrows()
             ]
             telemetry_df["Twin_Predicted_Power_kW"] = twin_power_predictions
@@ -402,11 +409,33 @@ with tab_telemetry:
             mean_residual = telemetry_df["Residual_Error_kW"].mean()
             datapoints_val = len(telemetry_df)
 
+            # Auto-calibration factor suggestion
+            recommended_cal = float(telemetry_df["Measured_Power_kW"].sum() / telemetry_df["Twin_Predicted_Power_kW"].sum() * current_cal)
+
+            # CALIBRATION CONTROLLER BANNER
+            st.markdown("---")
+            cal_c1, cal_c2, cal_c3 = st.columns([2, 1, 1])
+            with cal_c1:
+                st.markdown(f"**Adaptive Model Calibration Status:** Current Factor: `{current_cal:.3f}` | Suggested Factor: `{recommended_cal:.3f}`")
+                if abs(recommended_cal - current_cal) > 0.01:
+                    st.warning("⚠️ Telemetry indicates systematic physical drift/fouling. Recalibration recommended.")
+                else:
+                    st.success("✅ Digital Twin is perfectly calibrated to telemetry sensor ground-truth.")
+            with cal_c2:
+                if st.button("🎯 Apply Auto-Calibration"):
+                    st.session_state["calibration_factor"] = recommended_cal
+                    st.rerun()
+            with cal_c3:
+                if st.button("↺ Reset Calibration (1.0)"):
+                    st.session_state["calibration_factor"] = 1.0
+                    st.rerun()
+            st.markdown("---")
+
             mcol1, mcol2, mcol3, mcol4 = st.columns(4)
             mcol1.metric("Model Parity ($R^2$ Score)", f"{r2_val:.3f}", "Good Fit" if r2_val > 0.90 else "Deviation Detected")
             mcol2.metric("Mean Absolute Error (MAPE)", f"{mape_val:.2f}%", "< 5% Target")
-            mcol3.metric("Average Bias Residual", f"{mean_residual:+.2f} kW", "Zero-bias ideal")
-            mcol4.metric("Logged Timestamps", f"{datapoints_val}")
+            mcol3.metric("Average Bias Residual", f"{mean_residual:+.2f} kW", "Near zero ideal")
+            mcol4.metric("Active Cal Factor", f"{current_cal:.3f}")
 
             fig_ts = go.Figure()
             fig_ts.add_trace(go.Scatter(
@@ -420,7 +449,7 @@ with tab_telemetry:
                 x=telemetry_df["Timestamp"], 
                 y=telemetry_df["Twin_Predicted_Power_kW"], 
                 mode="lines", 
-                name="ThermoTwin Physics Prediction (kW)",
+                name=f"Digital Twin ({'Calibrated' if current_cal != 1.0 else 'Uncalibrated'})",
                 line=dict(color="#0068C9", width=2, dash="dash")
             ))
             fig_ts.update_layout(
@@ -431,58 +460,11 @@ with tab_telemetry:
                 margin=dict(l=40, r=40, t=50, b=40)
             )
             st.plotly_chart(fig_ts, width="stretch")
-
-            sc_col1, sc_col2 = st.columns(2)
-            with sc_col1:
-                p_min = min(telemetry_df["Measured_Power_kW"].min(), telemetry_df["Twin_Predicted_Power_kW"].min()) * 0.95
-                p_max = max(telemetry_df["Measured_Power_kW"].max(), telemetry_df["Twin_Predicted_Power_kW"].max()) * 1.05
-
-                fig_parity = go.Figure()
-                fig_parity.add_trace(go.Scatter(
-                    x=telemetry_df["Measured_Power_kW"],
-                    y=telemetry_df["Twin_Predicted_Power_kW"],
-                    mode="markers",
-                    marker=dict(color="#29B09D", size=7, opacity=0.8),
-                    name="Operating Points"
-                ))
-                fig_parity.add_trace(go.Scatter(
-                    x=[p_min, p_max],
-                    y=[p_min, p_max],
-                    mode="lines",
-                    line=dict(color="gray", dash="dot"),
-                    name="1:1 Parity"
-                ))
-                fig_parity.update_layout(
-                    title="Parity Plot (Measured vs. Predicted)",
-                    xaxis=dict(title="Measured Power (kW)", range=[p_min, p_max]),
-                    yaxis=dict(title="Twin Predicted Power (kW)", range=[p_min, p_max]),
-                    height=340,
-                    margin=dict(l=40, r=40, t=50, b=40)
-                )
-                st.plotly_chart(fig_parity, width="stretch")
-
-            with sc_col2:
-                fig_res = go.Figure()
-                fig_res.add_trace(go.Histogram(
-                    x=telemetry_df["Residual_Error_kW"],
-                    nbinsx=15,
-                    marker_color="#FFAA00",
-                    name="Residuals"
-                ))
-                fig_res.add_vline(x=0.0, line_dash="dash", line_color="red")
-                fig_res.update_layout(
-                    title="Residual Distribution (Measured - Predicted)",
-                    xaxis=dict(title="Error (kW)"),
-                    yaxis=dict(title="Frequency"),
-                    height=340,
-                    margin=dict(l=40, r=40, t=50, b=40)
-                )
-                st.plotly_chart(fig_res, width="stretch")
     else:
         st.info("Upload a plant telemetry file (`.csv` or `.parquet`) or click the sample button above to evaluate model parity.")
 
 # ==============================================================================
-# TAB 4: EXECUTIVE AUDIT REPORT (PRINTABLE HTML / PDF-READY)
+# TAB 4: EXECUTIVE AUDIT REPORT
 # ==============================================================================
 with tab_report:
     st.subheader("📄 Executive Energy & Mechanical Compliance Audit Report")
@@ -514,7 +496,7 @@ with tab_report:
         <div class="header">
             <span class="badge">ASME CIE Standardized Dispatch</span>
             <h1>ThermoTwin: Physics-Informed HVAC Optimization Audit</h1>
-            <div><b>Equipment Tag:</b> Chiller-01 | <b>Refrigerant Circuit:</b> {refrigerant} | <b>Timestamp:</b> September 2026</div>
+            <div><b>Equipment Tag:</b> Chiller-01 | <b>Refrigerant:</b> {refrigerant} | <b>Calibration Factor:</b> {current_cal:.3f}</div>
         </div>
 
         <div class="kpi-grid">
@@ -584,7 +566,7 @@ with tab_report:
             </tbody>
         </table>
 
-        <h3>Empirical Model Parity & Validation</h3>
+        <h3>Empirical Model Parity & Adaptive Calibration</h3>
         <table>
             <thead>
                 <tr>
@@ -595,6 +577,12 @@ with tab_report:
                 </tr>
             </thead>
             <tbody>
+                <tr>
+                    <td>Active Calibration Factor</td>
+                    <td>{current_cal:.3f}</td>
+                    <td>1.0 &plusmn; 0.05</td>
+                    <td>{'CALIBRATED' if current_cal != 1.0 else 'NOMINAL'}</td>
+                </tr>
                 <tr>
                     <td>Model Parity Coefficient ($R^2$)</td>
                     <td>{r2_val:.3f}</td>
