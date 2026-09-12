@@ -52,12 +52,10 @@ def calculate_chiller_performance(chw_supply_c, amb_c, load_kw, ref, cal_factor=
     t_evap_k = (chw_supply_c - 2.5) + 273.15
     t_cond_k = (amb_c + 8.0) + 273.15
     
-    # Saturation pressures converted to bar
     p_evap = CP.PropsSI('P', 'T', t_evap_k, 'Q', 1, ref) / 1e5
     p_cond = CP.PropsSI('P', 'T', t_cond_k, 'Q', 0, ref) / 1e5
     pressure_ratio = p_cond / p_evap
     
-    # Thermodynamic efficiency model
     carnot_cop = t_evap_k / (t_cond_k - t_evap_k)
     isentropic_eff = 0.68 - (0.015 * pressure_ratio)
     system_cop = max(carnot_cop * isentropic_eff * 0.75, 1.2)
@@ -295,11 +293,14 @@ with tab_benchmark:
             name="Power Draw (kW)",
             x=scenarios_names,
             y=[baseline_power, comfort_power, optimal_power],
-            marker_color=["#7F7F7F", "#0068C9", "#29B09D"]
+            marker_color=["#94a3b8", "#38bdf8", "#34d399"]
         ))
         fig_scenarios.update_layout(
             title="Comparative Power Draw by Scenario",
             yaxis=dict(title="Power (kW)"),
+            template="plotly_dark",
+            paper_bgcolor="rgba(0,0,0,0)",
+            plot_bgcolor="rgba(0,0,0,0)",
             height=360,
             margin=dict(l=40, r=40, t=50, b=40)
         )
@@ -317,18 +318,21 @@ with tab_benchmark:
         ]
 
         fig_sweep = go.Figure()
-        fig_sweep.add_trace(go.Scatter(x=temps_sweep, y=powers_sweep, name="Total Power (kW)", line=dict(color="#FF4B4B", width=3)))
-        fig_sweep.add_trace(go.Scatter(x=temps_sweep, y=cops_sweep, name="System COP", yaxis="y2", line=dict(color="#0068C9", width=3, dash="dash")))
+        fig_sweep.add_trace(go.Scatter(x=temps_sweep, y=powers_sweep, name="Total Power (kW)", line=dict(color="#f87171", width=3)))
+        fig_sweep.add_trace(go.Scatter(x=temps_sweep, y=cops_sweep, name="System COP", yaxis="y2", line=dict(color="#38bdf8", width=3, dash="dash")))
 
-        fig_sweep.add_vline(x=baseline_temp, line_width=2, line_dash="dot", line_color="gray", annotation_text="Baseline")
-        fig_sweep.add_vline(x=comfort_temp, line_width=2, line_dash="dash", line_color="#0068C9", annotation_text="ASHRAE 55")
-        fig_sweep.add_vline(x=optimal_temp, line_width=2, line_dash="solid", line_color="#29B09D", annotation_text="Optimal")
+        fig_sweep.add_vline(x=baseline_temp, line_width=2, line_dash="dot", line_color="#94a3b8", annotation_text="Baseline")
+        fig_sweep.add_vline(x=comfort_temp, line_width=2, line_dash="dash", line_color="#38bdf8", annotation_text="ASHRAE 55")
+        fig_sweep.add_vline(x=optimal_temp, line_width=2, line_dash="solid", line_color="#34d399", annotation_text="Optimal")
 
         fig_sweep.update_layout(
             title="CHW Supply Temp vs. Power & COP",
             xaxis=dict(title="Supply Temperature (°C)"),
             yaxis=dict(title="Power (kW)", side="left"),
             yaxis2=dict(title="System COP", overlaying="y", side="right"),
+            template="plotly_dark",
+            paper_bgcolor="rgba(0,0,0,0)",
+            plot_bgcolor="rgba(0,0,0,0)",
             height=360,
             margin=dict(l=40, r=40, t=50, b=40)
         )
@@ -373,7 +377,6 @@ with tab_telemetry:
         sample_load = 400.0 + 350.0 * np.sin(np.linspace(0, np.pi, hours)) + np.random.normal(0, 15, hours)
         sample_chwst = np.full(hours, 6.7) + np.random.normal(0, 0.2, hours)
         
-        # Ground-truth power with slight thermal fouling offset (~3.5%)
         twin_power_clean = [
             calculate_chiller_performance(chw, amb, q, refrigerant, 1.0)["total_power_kw"]
             for chw, amb, q in zip(sample_chwst, sample_amb, sample_load)
@@ -409,10 +412,8 @@ with tab_telemetry:
             mean_residual = telemetry_df["Residual_Error_kW"].mean()
             datapoints_val = len(telemetry_df)
 
-            # Auto-calibration factor suggestion
             recommended_cal = float(telemetry_df["Measured_Power_kW"].sum() / telemetry_df["Twin_Predicted_Power_kW"].sum() * current_cal)
 
-            # CALIBRATION CONTROLLER BANNER
             st.markdown("---")
             cal_c1, cal_c2, cal_c3 = st.columns([2, 1, 1])
             with cal_c1:
@@ -443,19 +444,22 @@ with tab_telemetry:
                 y=telemetry_df["Measured_Power_kW"], 
                 mode="lines+markers", 
                 name="Measured Sensor Telemetry (kW)",
-                line=dict(color="#FF4B4B", width=2)
+                line=dict(color="#f87171", width=2)
             ))
             fig_ts.add_trace(go.Scatter(
                 x=telemetry_df["Timestamp"], 
                 y=telemetry_df["Twin_Predicted_Power_kW"], 
                 mode="lines", 
                 name=f"Digital Twin ({'Calibrated' if current_cal != 1.0 else 'Uncalibrated'})",
-                line=dict(color="#0068C9", width=2, dash="dash")
+                line=dict(color="#38bdf8", width=2, dash="dash")
             ))
             fig_ts.update_layout(
                 title="Continuous Parity: Measured Power vs. Physics Digital Twin Prediction",
                 xaxis=dict(title="Timestamp"),
                 yaxis=dict(title="Power (kW)"),
+                template="plotly_dark",
+                paper_bgcolor="rgba(0,0,0,0)",
+                plot_bgcolor="rgba(0,0,0,0)",
                 height=380,
                 margin=dict(l=40, r=40, t=50, b=40)
             )
@@ -464,12 +468,13 @@ with tab_telemetry:
         st.info("Upload a plant telemetry file (`.csv` or `.parquet`) or click the sample button above to evaluate model parity.")
 
 # ==============================================================================
-# TAB 4: EXECUTIVE AUDIT REPORT
+# TAB 4: EXECUTIVE AUDIT REPORT (DARK-MODE & PRINT READY)
 # ==============================================================================
 with tab_report:
     st.subheader("📄 Executive Energy & Mechanical Compliance Audit Report")
     st.caption("Standardized audit documentation for facility directors, mechanical engineers, and compliance boards.")
 
+    # Adaptive theme styling: works clearly in both Dark and Light mode
     html_report = f"""
     <!DOCTYPE html>
     <html>
@@ -477,52 +482,89 @@ with tab_report:
     <meta charset="utf-8">
     <title>ThermoTwin Executive Audit Report</title>
     <style>
-        body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; margin: 25px; color: #1e293b; line-height: 1.5; }}
-        .header {{ border-bottom: 3px solid #0068c9; padding-bottom: 12px; margin-bottom: 24px; }}
-        .badge {{ background-color: #e0f2fe; color: #0369a1; padding: 4px 10px; border-radius: 4px; font-weight: 600; font-size: 12px; text-transform: uppercase; }}
-        h1 {{ margin: 0 0 6px 0; font-size: 24px; color: #0f172a; }}
-        .kpi-grid {{ display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; margin-bottom: 24px; }}
-        .kpi-card {{ border: 1px solid #e2e8f0; border-radius: 8px; padding: 14px; background: #f8fafc; }}
-        .kpi-title {{ font-size: 12px; text-transform: uppercase; color: #64748b; font-weight: 600; }}
-        .kpi-value {{ font-size: 20px; font-weight: 700; color: #0284c7; margin-top: 4px; }}
-        table {{ width: 100%; border-collapse: collapse; margin: 18px 0; font-size: 14px; }}
-        th, td {{ border: 1px solid #cbd5e1; padding: 10px 12px; text-align: left; }}
-        th {{ background-color: #f1f5f9; font-weight: 600; }}
-        .compliance-box {{ background: #ecfdf5; border-left: 4px solid #10b981; padding: 12px; margin: 16px 0; font-size: 14px; }}
-        .action-box {{ background: #eff6ff; border-left: 4px solid #3b82f6; padding: 12px; margin: 16px 0; font-size: 14px; }}
+        :root {{
+            --bg-color: #0f172a;
+            --card-bg: #1e293b;
+            --text-main: #f8fafc;
+            --text-sub: #94a3b8;
+            --border-color: #334155;
+            --primary: #38bdf8;
+            --accent-green: #34d399;
+        }}
+        @media (prefers-color-scheme: light) {{
+            :root {{
+                --bg-color: #ffffff;
+                --card-bg: #f8fafc;
+                --text-main: #0f172a;
+                --text-sub: #475569;
+                --border-color: #cbd5e1;
+                --primary: #0284c7;
+                --accent-green: #10b981;
+            }}
+        }}
+        @media print {{
+            :root {{
+                --bg-color: #ffffff !important;
+                --card-bg: #f8fafc !important;
+                --text-main: #000000 !important;
+                --text-sub: #333333 !important;
+                --border-color: #cccccc !important;
+                --primary: #0284c7 !important;
+            }}
+        }}
+        body {{
+            background-color: var(--bg-color);
+            color: var(--text-main);
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            margin: 20px;
+            line-height: 1.5;
+        }}
+        .header {{ border-bottom: 2px solid var(--primary); padding-bottom: 12px; margin-bottom: 20px; }}
+        .badge {{ background-color: var(--card-bg); border: 1px solid var(--primary); color: var(--primary); padding: 4px 10px; border-radius: 4px; font-weight: 600; font-size: 11px; text-transform: uppercase; }}
+        h1 {{ margin: 8px 0 4px 0; font-size: 22px; color: var(--text-main); }}
+        .kpi-grid {{ display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 20px; }}
+        .kpi-card {{ border: 1px solid var(--border-color); border-radius: 8px; padding: 12px; background: var(--card-bg); }}
+        .kpi-title {{ font-size: 11px; text-transform: uppercase; color: var(--text-sub); font-weight: 600; }}
+        .kpi-value {{ font-size: 20px; font-weight: 700; color: var(--primary); margin-top: 4px; }}
+        table {{ width: 100%; border-collapse: collapse; margin: 16px 0; font-size: 13px; }}
+        th, td {{ border: 1px solid var(--border-color); padding: 8px 10px; text-align: left; }}
+        th {{ background-color: var(--card-bg); color: var(--text-main); font-weight: 600; }}
+        td {{ color: var(--text-main); }}
+        .compliance-box {{ background: var(--card-bg); border-left: 4px solid var(--accent-green); padding: 12px; margin: 14px 0; font-size: 13px; }}
+        .action-box {{ background: var(--card-bg); border-left: 4px solid var(--primary); padding: 12px; margin: 14px 0; font-size: 13px; }}
     </style>
     </head>
     <body>
         <div class="header">
             <span class="badge">ASME CIE Standardized Dispatch</span>
             <h1>ThermoTwin: Physics-Informed HVAC Optimization Audit</h1>
-            <div><b>Equipment Tag:</b> Chiller-01 | <b>Refrigerant:</b> {refrigerant} | <b>Calibration Factor:</b> {current_cal:.3f}</div>
+            <div><b>Tag:</b> Chiller-01 | <b>Circuit:</b> {refrigerant} | <b>Calibration Factor:</b> {current_cal:.3f}</div>
         </div>
 
         <div class="kpi-grid">
             <div class="kpi-card">
                 <div class="kpi-title">Optimal Reset Temp</div>
                 <div class="kpi-value">{optimal_temp:.2f} °C</div>
-                <small>Baseline: {baseline_temp:.1f} °C (+{optimal_temp - baseline_temp:.2f} °C)</small>
+                <small style="color: var(--text-sub)">Baseline: {baseline_temp:.1f} °C (+{optimal_temp - baseline_temp:.2f} °C)</small>
             </div>
             <div class="kpi-card">
                 <div class="kpi-title">Power Curtailment</div>
                 <div class="kpi-value">-{savings_pct:.1f}%</div>
-                <small>{baseline_power:.1f} kW &rarr; {optimal_power:.1f} kW</small>
+                <small style="color: var(--text-sub)">{baseline_power:.1f} kW &rarr; {optimal_power:.1f} kW</small>
             </div>
             <div class="kpi-card">
                 <div class="kpi-title">Monthly Cost Savings</div>
                 <div class="kpi-value">${monthly_savings_usd:,.0f} / mo</div>
-                <small>@ ${electricity_cost:.2f}/kWh</small>
+                <small style="color: var(--text-sub)">@ ${electricity_cost:.2f}/kWh</small>
             </div>
             <div class="kpi-card">
                 <div class="kpi-title">Carbon Abatement</div>
                 <div class="kpi-value">-{co2_saved_tons:.1f} t CO2e</div>
-                <small>Per month operations</small>
+                <small style="color: var(--text-sub)">Per month operations</small>
             </div>
         </div>
 
-        <h3>Operational Benchmark Comparison</h3>
+        <h3 style="color: var(--text-main)">Operational Benchmark Comparison</h3>
         <table>
             <thead>
                 <tr>
@@ -532,7 +574,7 @@ with tab_report:
                     <th>System COP</th>
                     <th>Compression Ratio</th>
                     <th>Monthly Expense</th>
-                    <th>Monthly Carbon Footprint</th>
+                    <th>Monthly CO2</th>
                 </tr>
             </thead>
             <tbody>
@@ -566,7 +608,7 @@ with tab_report:
             </tbody>
         </table>
 
-        <h3>Empirical Model Parity & Adaptive Calibration</h3>
+        <h3 style="color: var(--text-main)">Empirical Model Parity & Adaptive Calibration</h3>
         <table>
             <thead>
                 <tr>
@@ -613,7 +655,7 @@ with tab_report:
 
         <div class="action-box">
             <b>Supervisory PLC/BMS Dispatch Directive:</b><br>
-            Ramp the chilled water supply setpoint from {baseline_temp:.1f}°C to {optimal_temp:.2f}°C in increments not exceeding <b>0.5°C per 10 minutes</b> to eliminate chilled water valve oscillation.
+            Ramp chilled water supply setpoint from {baseline_temp:.1f}°C to {optimal_temp:.2f}°C at a rate not exceeding <b>0.5°C per 10 minutes</b> to prevent valve oscillation.
         </div>
     </body>
     </html>
